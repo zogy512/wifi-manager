@@ -626,6 +626,68 @@ body.locked .bottomnav { display: none; }
   font-weight: 600;
 }
 
+/* ---------- Vitrine / licence application ---------- */
+body.gated { overflow-y: auto; }
+body.gated .topbar,
+body.gated .app,
+body.gated .bottomnav { display: none; }
+.gate {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  overflow-y: auto;
+  padding: 24px 16px 40px;
+  background:
+    radial-gradient(800px 420px at 110% -10%, #d9f3e5 0%, transparent 60%),
+    radial-gradient(700px 380px at -20% 0%, #e6f0e9 0%, transparent 55%),
+    var(--bg);
+}
+.gate[hidden] { display: none; }
+.gate-wrap {
+  width: min(520px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.gate-hero { padding: 28px 8px 4px; text-align: center; }
+.gate-hero h1 { margin: 14px 0 3px; font-size: 28px; letter-spacing: -.6px; }
+.gate-hero p { font-size: 13.5px; }
+.gate-status { margin-top: 11px; }
+.gate-features { display: grid; gap: 11px; }
+.gate-feature { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; }
+.gate-feature svg { width: 20px; height: 20px; flex: none; color: var(--brand); margin-top: 1px; }
+.gate-plan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+}
+.gate-plan-main { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+.gate-plan-main strong { font-size: 14px; }
+.gate-plan-end { display: flex; align-items: center; gap: 10px; }
+.gate-plan-end > strong { font-size: 14px; white-space: nowrap; }
+.device-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.device-box strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  letter-spacing: .5px;
+}
+.activate-form { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+
 @media (min-width: 620px) {
   .kpis { grid-template-columns: repeat(4, 1fr); }
   .quick { grid-template-columns: repeat(3, 1fr); }

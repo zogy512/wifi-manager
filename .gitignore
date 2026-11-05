@@ -2,3 +2,5 @@
 .server.pid
 *.log
 .DS_Store
+
+tools/license-key.json

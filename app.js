@@ -27,8 +27,18 @@ function licensePlanLabel(id) {
 }
 
 const DB_KEY = 'wifipro:db:v1';
+const APP_LICENSE_KEY = 'wifipro:app-license:v1';
+const DEVICE_KEY = 'wifipro:device:v1';
 const LOW_STOCK = 2;
 const DAY_MS = 86400000;
+const APP_LICENSE_PUBLIC_KEY = {
+  key_ops: ['verify'],
+  ext: true,
+  kty: 'EC',
+  x: '6aSeDREfkt1ViDyyxATcOhPZDY-kN7uNNtvAsBdoTJk',
+  y: '0UEu2z_irZhFK2z6GEVpg3h3oXtVlVmkdnG8uRgoHiM',
+  crv: 'P-256',
+};
 
 /* ------------------------------------------------------------------ */
 /* Petites aides                                                       */
@@ -69,6 +79,41 @@ function openWhatsApp(message) {
   const url = whatsappLink(message);
   const win = window.open(url, '_blank', 'noopener');
   if (!win) location.href = url;
+}
+
+const fmtDevice = (id) => String(id || '').replace(/(.{4})/g, '$1-').replace(/-$/, '');
+
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!/^[A-Z0-9]{8,32}$/.test(id || '')) {
+      const raw = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}${Math.random()}`)
+        .replace(/-/g, '')
+        .toUpperCase();
+      id = `${raw}0000000000000000`.slice(0, 16);
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch (e) {
+    return 'LOCALDEVICE00000';
+  }
+}
+
+function getStoredAppLicense() {
+  try {
+    return localStorage.getItem(APP_LICENSE_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function storeAppLicense(code) {
+  try {
+    if (code) localStorage.setItem(APP_LICENSE_KEY, code);
+    else localStorage.removeItem(APP_LICENSE_KEY);
+  } catch (e) {
+    /* stockage indisponible */
+  }
 }
 const fmtDate = (iso, withTime = false) => {
   const d = new Date(iso);
@@ -348,6 +393,8 @@ let reportPeriod = '30';
 let clientFilter = 'active';
 let currentAfter = null;
 let lastRouteKey = '';
+let appLicense = null;
+let appLicenseExpired = null;
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -369,6 +416,16 @@ function setActiveNav(page) {
 }
 
 function render() {
+  if (!appLicense) {
+    showGate(appLicenseExpired);
+    return;
+  }
+  if (String(appLicense.e) < todayKey()) {
+    appLicenseExpired = appLicense;
+    appLicense = null;
+    showGate(appLicenseExpired);
+    return;
+  }
   if (document.body.classList.contains('locked')) return;
   const route = parseHash();
   const known = ['home', 'vendors', 'vendor', 'sales', 'stock', 'more', 'clients', 'licenses', 'reports'];
@@ -1148,7 +1205,9 @@ function pageMore() {
   <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.3</strong></div>
+      <div><span>Version</span><strong>1.4</strong></div>
+      <div><span>Licence application</span><strong>${appLicense ? fmtDay(appLicense.e) : '—'}</strong></div>
+      <div><span>ID appareil</span><strong>${esc(fmtDevice(getDeviceId()))}</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
       <div><span>Types de codes</span><strong>${TYPES.length}</strong></div>
     </div>
@@ -2028,6 +2087,10 @@ async function verifyPin(pin) {
 }
 
 function lockApp() {
+  if (!appLicense) {
+    showGate(appLicenseExpired);
+    return;
+  }
   if (!db.settings.pin) return;
   const lock = $('#lock');
   if (!lock) return;
@@ -2077,6 +2140,249 @@ function forgotPin() {
   localStorage.removeItem(DB_KEY);
   location.hash = '#/home';
   location.reload();
+}
+
+/* ------------------------------------------------------------------ */
+/* Licence de l'application (accès vitrine / accès complet)            */
+/* ------------------------------------------------------------------ */
+
+function base64UrlToBytes(value) {
+  const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function verifyAppLicenseCode(rawCode) {
+  const code = String(rawCode || '').replace(/\s+/g, '');
+  const [payloadPart, signaturePart] = code.split('.');
+  if (!payloadPart || !signaturePart) return { ok: false, reason: 'Code d’activation invalide.' };
+
+  let payloadText;
+  let payload;
+  try {
+    payloadText = new TextDecoder().decode(base64UrlToBytes(payloadPart));
+    payload = JSON.parse(payloadText);
+  } catch (e) {
+    return { ok: false, reason: 'Code d’activation invalide.' };
+  }
+  if (!payload || payload.a !== 'wifipro' || payload.v !== 1) {
+    return { ok: false, reason: 'Code d’activation invalide.' };
+  }
+
+  let verified = false;
+  try {
+    if (!(crypto && crypto.subtle && crypto.subtle.importKey)) throw new Error('Web Crypto indisponible');
+    const key = await crypto.subtle.importKey(
+      'jwk',
+      APP_LICENSE_PUBLIC_KEY,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify']
+    );
+    verified = await crypto.subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      key,
+      base64UrlToBytes(signaturePart),
+      new TextEncoder().encode(payloadText)
+    );
+  } catch (e) {
+    return { ok: false, reason: 'Vérification impossible sur ce navigateur.' };
+  }
+  if (!verified) return { ok: false, reason: 'Code d’activation invalide.' };
+
+  if (payload.d !== '*' && payload.d !== getDeviceId()) {
+    return { ok: false, reason: 'Ce code est destiné à un autre appareil.', payload };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.s || '') || !/^\d{4}-\d{2}-\d{2}$/.test(payload.e || '')) {
+    return { ok: false, reason: 'Code d’activation invalide.' };
+  }
+  const today = todayKey();
+  if (String(payload.e) < today) {
+    return { ok: false, reason: `Licence expirée le ${fmtDay(payload.e)}.`, payload };
+  }
+  if (String(payload.s) > today) {
+    return { ok: false, reason: `Licence valable à partir du ${fmtDay(payload.s)}.`, payload };
+  }
+  return { ok: true, payload };
+}
+
+async function refreshAppLicense() {
+  appLicense = null;
+  appLicenseExpired = null;
+  const code = getStoredAppLicense();
+  if (!code) return null;
+  const result = await verifyAppLicenseCode(code);
+  if (result.ok) {
+    appLicense = result.payload;
+    return appLicense;
+  }
+  if (result.payload && String(result.payload.e) < todayKey()) appLicenseExpired = result.payload;
+  return null;
+}
+
+function hideGate() {
+  const gate = $('#gate');
+  if (gate) {
+    gate.hidden = true;
+    gate.innerHTML = '';
+  }
+  document.body.classList.remove('gated');
+}
+
+function showGate(expired = null) {
+  const gate = $('#gate');
+  if (!gate) return;
+  const sheet = $('#sheet');
+  if (sheet && sheet.open) sheet.close();
+  const lock = $('#lock');
+  if (lock) lock.hidden = true;
+  document.body.classList.remove('locked');
+  document.body.classList.add('gated');
+  gate.hidden = false;
+
+  const prices = db.settings.licensePrices || {};
+  const device = getDeviceId();
+  const wa = fmtPhone(db.settings.whatsapp);
+  const features = [
+    ['users', 'Gestion des vendeurs et du stock de codes'],
+    ['cart', 'Ventes, versements et suivi des soldes'],
+    ['refresh', 'Clients mensuels et renouvellements'],
+    ['chart', 'Rapports, licences vendeurs et exports CSV'],
+  ];
+  const status = expired
+    ? `<span class="badge warn">Licence expirée le ${fmtDay(expired.e)}</span>`
+    : '<span class="badge info">Accès vitrine</span>';
+
+  gate.innerHTML = `
+  <div class="gate-wrap">
+    <div class="gate-hero">
+      <span class="brand-logo lock-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M3.5 9.5a13 13 0 0 1 17 0"/>
+          <path d="M6.5 13a8.5 8.5 0 0 1 11 0"/>
+          <path d="M9.5 16.4a4 4 0 0 1 5 0"/>
+          <circle cx="12" cy="19.4" r="1.2" fill="currentColor" stroke="none"/>
+        </svg>
+      </span>
+      <h1>WifiPro</h1>
+      <p class="muted">Gérez votre réseau wifi, vos vendeurs et vos codes.</p>
+      <div class="gate-status">${status}</div>
+    </div>
+
+    <section class="card">
+      <div class="card-head"><h3>Ce que permet WifiPro</h3></div>
+      <div class="gate-features">
+        ${features.map(([name, text]) => `<div class="gate-feature">${icon(name)}<span>${text}</span></div>`).join('')}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Choisir une licence</h3></div>
+      ${expired
+        ? '<p class="hint warn">Votre licence a expiré. Choisissez une formule pour renouveler et retrouver vos données.</p>'
+        : '<p class="hint">Sans licence, l’application reste en mode vitrine. Après paiement, vous recevrez un code d’activation.</p>'}
+      <div class="stack">
+        ${LICENSE_PLANS.map(
+          (p) => `<div class="gate-plan">
+            <div class="gate-plan-main">
+              <strong>${p.label}</strong>
+              <span class="muted small">${p.months} mois</span>
+            </div>
+            <div class="gate-plan-end">
+              <strong>${num(prices[p.id]) > 0 ? fmt(prices[p.id]) : 'Prix à confirmer'}</strong>
+              <button class="btn sm" type="button" data-action="app-license-whatsapp" data-plan="${p.id}">${icon('chat')}WhatsApp</button>
+            </div>
+          </div>`
+        ).join('')}
+      </div>
+      <p class="hint">La demande arrive au ${esc(wa)}. Envoyez aussi votre ID appareil ci-dessous.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Activer l’application</h3><span class="badge info">Code</span></div>
+      <p class="hint">Communiquez cet ID appareil au gérant avec votre demande :</p>
+      <div class="device-box">
+        <strong>${esc(fmtDevice(device))}</strong>
+        <button class="btn subtle sm" type="button" data-action="copy-device">Copier</button>
+      </div>
+      <form id="activateLicenseForm" class="activate-form">
+        <label class="field"><span>Code d’activation reçu sur WhatsApp</span>
+          <textarea name="code" rows="3" placeholder="Collez ici le code reçu" required></textarea>
+        </label>
+        <button class="btn block" type="submit">${icon('check')}Activer l’application</button>
+        <p class="hint" id="activateMsg" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h3>Besoin d’aide ?</h3></div>
+      <button class="btn ghost block" type="button" data-action="app-license-contact">${icon('chat')}Contacter le gérant sur WhatsApp</button>
+    </section>
+
+    <p class="muted small" style="text-align:center;padding:4px 10px 10px">WifiPro · version vitrine</p>
+  </div>`;
+}
+
+function appLicenseRequest(planId) {
+  const plan = LICENSE_MAP[planId];
+  if (!plan) return;
+  const price = num((db.settings.licensePrices || {})[plan.id]);
+  const device = fmtDevice(getDeviceId());
+  const message = [
+    `Bonjour, je souhaite activer WifiPro avec la formule ${plan.label}${price > 0 ? ` (${fmt(price)})` : ''}.`,
+    `ID appareil : ${device}.`,
+    'Merci de m’envoyer le code d’activation.',
+  ].join('\n');
+  openWhatsApp(message);
+}
+
+function contactManager() {
+  openWhatsApp('Bonjour, j’ai une question concernant la licence WifiPro.');
+}
+
+async function copyDeviceId() {
+  const device = fmtDevice(getDeviceId());
+  try {
+    await navigator.clipboard.writeText(device);
+    toast('ID appareil copié');
+  } catch (e) {
+    toast(`ID appareil : ${device}`);
+  }
+}
+
+async function handleActivationSubmit(event) {
+  if (!event.target.matches('#activateLicenseForm')) return;
+  event.preventDefault();
+  const form = event.target;
+  const msg = $('#activateMsg');
+  const code = String(new FormData(form).get('code') || '').trim();
+  if (!code) return;
+  if (msg) {
+    msg.textContent = 'Vérification du code…';
+    msg.classList.remove('warn');
+  }
+  const result = await verifyAppLicenseCode(code);
+  if (!result.ok) {
+    if (msg) {
+      msg.textContent = result.reason || 'Code d’activation invalide.';
+      msg.classList.add('warn');
+    }
+    return;
+  }
+  storeAppLicense(code.replace(/\s+/g, ''));
+  appLicense = result.payload;
+  appLicenseExpired = null;
+  hideGate();
+  toast(`Licence active jusqu’au ${fmtDay(result.payload.e)}`);
+  if (db.settings.pin) {
+    lockApp();
+  } else {
+    document.body.classList.remove('locked');
+    render();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2239,6 +2545,9 @@ document.addEventListener('click', (e) => {
     case 'pin-set': openPinForm(); break;
     case 'pin-remove': removePin(); break;
     case 'lock-now': lockApp(); break;
+    case 'app-license-whatsapp': appLicenseRequest(btn.dataset.plan); break;
+    case 'app-license-contact': contactManager(); break;
+    case 'copy-device': copyDeviceId(); break;
     case 'reset-data': resetData(); break;
     default: break;
   }
@@ -2270,11 +2579,20 @@ const lockForm = $('#lockForm');
 if (lockForm) lockForm.addEventListener('submit', handleUnlock);
 const forgotBtn = $('#forgotPin');
 if (forgotBtn) forgotBtn.addEventListener('click', forgotPin);
+const gate = $('#gate');
+if (gate) gate.addEventListener('submit', handleActivationSubmit);
 
 let hiddenSince = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     hiddenSince = Date.now();
+    return;
+  }
+  if (document.visibilityState === 'visible' && appLicense && String(appLicense.e) < todayKey()) {
+    appLicenseExpired = appLicense;
+    appLicense = null;
+    showGate(appLicenseExpired);
+    hiddenSince = 0;
     return;
   }
   if (document.visibilityState === 'visible' && db.settings.pin && hiddenSince) {
@@ -2298,9 +2616,17 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
-if (db.settings.pin) {
-  lockApp();
-} else {
-  document.body.classList.remove('locked');
-  render();
+async function boot() {
+  await refreshAppLicense();
+  if (!appLicense) {
+    showGate(appLicenseExpired);
+    return;
+  }
+  if (db.settings.pin) {
+    lockApp();
+  } else {
+    document.body.classList.remove('locked');
+    render();
+  }
 }
+boot();
