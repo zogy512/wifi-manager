@@ -20,7 +20,8 @@ const LICENSE_PLANS = [
 ];
 const LICENSE_MAP = Object.fromEntries(LICENSE_PLANS.map((p) => [p.id, p]));
 const LEGACY_PLAN_LABELS = { '1m': 'Mensuelle (ancienne)' };
-const WHATSAPP_DEFAULT = '221777003559';
+const WHATSAPP_DEFAULT = '2250777003559';
+const LEGACY_WHATSAPP_DEFAULT = '221777003559';
 
 function licensePlanLabel(id) {
   return (LICENSE_MAP[id] && LICENSE_MAP[id].label) || LEGACY_PLAN_LABELS[id] || id;
@@ -69,7 +70,10 @@ const fmtPlain = (n) => nf.format(Math.round(num(n)));
 const fmtPhone = (n) => {
   const digits = String(n || '').replace(/\D/g, '');
   if (!digits) return '';
-  const grouped = digits.replace(/^(\d{3})(\d{2})(\d{3})(\d{2})(\d{2})$/, '$1 $2 $3 $4 $5');
+  const grouped =
+    digits.length === 13
+      ? digits.replace(/^(\d{3})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/, '$1 $2 $3 $4 $5 $6')
+      : digits.replace(/^(\d{3})(\d{2})(\d{3})(\d{2})(\d{2})$/, '$1 $2 $3 $4 $5');
   return `+${grouped}`;
 };
 const whatsappNumber = () => (db.settings.whatsapp || WHATSAPP_DEFAULT).replace(/\D/g, '');
@@ -101,16 +105,33 @@ function getDeviceId() {
 
 function getStoredAppLicense() {
   try {
-    return localStorage.getItem(APP_LICENSE_KEY) || '';
+    const raw = localStorage.getItem(APP_LICENSE_KEY) || '';
+    if (!raw) return { code: '', activatedAt: null };
+    if (raw.charAt(0) === '{') {
+      const data = JSON.parse(raw);
+      if (data && typeof data.code === 'string') {
+        return {
+          code: data.code,
+          activatedAt: /^\d{4}-\d{2}-\d{2}$/.test(data.activatedAt || '') ? data.activatedAt : null,
+        };
+      }
+    }
+    return { code: raw, activatedAt: null };
   } catch (e) {
-    return '';
+    return { code: '', activatedAt: null };
   }
 }
 
-function storeAppLicense(code) {
+function storeAppLicense(code, activatedAt = null) {
   try {
-    if (code) localStorage.setItem(APP_LICENSE_KEY, code);
-    else localStorage.removeItem(APP_LICENSE_KEY);
+    if (!code) {
+      localStorage.removeItem(APP_LICENSE_KEY);
+      return;
+    }
+    localStorage.setItem(
+      APP_LICENSE_KEY,
+      JSON.stringify({ code, activatedAt: activatedAt || null })
+    );
   } catch (e) {
     /* stockage indisponible */
   }
@@ -235,7 +256,10 @@ function normalize(d) {
           ? num(src.settings.licensePrices['1y'])
           : 10000,
       },
-      whatsapp: String(src.settings && src.settings.whatsapp ? src.settings.whatsapp : '').replace(/\D/g, '') || WHATSAPP_DEFAULT,
+      whatsapp: (() => {
+        const stored = String(src.settings && src.settings.whatsapp ? src.settings.whatsapp : '').replace(/\D/g, '');
+        return !stored || stored === LEGACY_WHATSAPP_DEFAULT ? WHATSAPP_DEFAULT : stored;
+      })(),
       pin:
         src.settings && src.settings.pin && src.settings.pin.salt && src.settings.pin.hash
           ? { salt: String(src.settings.pin.salt), hash: String(src.settings.pin.hash) }
@@ -1205,7 +1229,7 @@ function pageMore() {
   <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.4</strong></div>
+      <div><span>Version</span><strong>1.5</strong></div>
       <div><span>Licence application</span><strong>${appLicense ? fmtDay(appLicense.e) : '—'}</strong></div>
       <div><span>ID appareil</span><strong>${esc(fmtDevice(getDeviceId()))}</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
@@ -1651,7 +1675,7 @@ function openLicenseSettings() {
         ).join('')}
       </div>
       <label class="field"><span>Numéro WhatsApp des licences</span>
-        <input type="tel" name="whatsapp" inputmode="tel" value="${fmtPhone(db.settings.whatsapp)}" placeholder="+221 77 700 35 59">
+        <input type="tel" name="whatsapp" inputmode="tel" value="${fmtPhone(db.settings.whatsapp)}" placeholder="+225 07 77 00 35 59">
       </label>
       <p class="hint">Ces montants préremplissent le formulaire de licence et restent modifiables à chaque paiement. Les demandes de licence arrivent sur ce numéro WhatsApp.</p>`,
     onSubmit(fd) {
@@ -2155,7 +2179,7 @@ function base64UrlToBytes(value) {
   return bytes;
 }
 
-async function verifyAppLicenseCode(rawCode) {
+async function verifyAppLicenseCode(rawCode, activatedAt = null) {
   const code = String(rawCode || '').replace(/\s+/g, '');
   const [payloadPart, signaturePart] = code.split('.');
   if (!payloadPart || !signaturePart) return { ok: false, reason: 'Code d’activation invalide.' };
@@ -2196,7 +2220,21 @@ async function verifyAppLicenseCode(rawCode) {
   if (payload.d !== '*' && payload.d !== getDeviceId()) {
     return { ok: false, reason: 'Ce code est destiné à un autre appareil.', payload };
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.s || '') || !/^\d{4}-\d{2}-\d{2}$/.test(payload.e || '')) {
+  if (payload.s === 'auto' || payload.e === 'auto') {
+    if (!Number.isInteger(payload.m) || payload.m < 1 || payload.m > 240) {
+      return { ok: false, reason: 'Code d’activation invalide.' };
+    }
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(activatedAt || '') ? activatedAt : todayKey();
+    payload = {
+      ...payload,
+      s: start,
+      e: addMonthsToDateKey(start, payload.m),
+      auto: true,
+    };
+  } else if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(payload.s || '') ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(payload.e || '')
+  ) {
     return { ok: false, reason: 'Code d’activation invalide.' };
   }
   const today = todayKey();
@@ -2212,11 +2250,14 @@ async function verifyAppLicenseCode(rawCode) {
 async function refreshAppLicense() {
   appLicense = null;
   appLicenseExpired = null;
-  const code = getStoredAppLicense();
-  if (!code) return null;
-  const result = await verifyAppLicenseCode(code);
+  const stored = getStoredAppLicense();
+  if (!stored.code) return null;
+  const result = await verifyAppLicenseCode(stored.code, stored.activatedAt);
   if (result.ok) {
     appLicense = result.payload;
+    if (result.payload.auto && !stored.activatedAt) {
+      storeAppLicense(stored.code, result.payload.s);
+    }
     return appLicense;
   }
   if (result.payload && String(result.payload.e) < todayKey()) appLicenseExpired = result.payload;
@@ -2364,7 +2405,7 @@ async function handleActivationSubmit(event) {
     msg.textContent = 'Vérification du code…';
     msg.classList.remove('warn');
   }
-  const result = await verifyAppLicenseCode(code);
+  const result = await verifyAppLicenseCode(code, todayKey());
   if (!result.ok) {
     if (msg) {
       msg.textContent = result.reason || 'Code d’activation invalide.';
@@ -2372,7 +2413,7 @@ async function handleActivationSubmit(event) {
     }
     return;
   }
-  storeAppLicense(code.replace(/\s+/g, ''));
+  storeAppLicense(code.replace(/\s+/g, ''), result.payload.auto ? result.payload.s : null);
   appLicense = result.payload;
   appLicenseExpired = null;
   hideGate();

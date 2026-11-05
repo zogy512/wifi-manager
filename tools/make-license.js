@@ -59,6 +59,7 @@ Options :
   --months   durée personnalisée en mois (prioritaire sur --plan)
   --name     nom du client ou du point de vente
   --start    date de début (par défaut aujourd'hui)
+  --auto-start  la durée commence à l'activation (utile pour un stock)
   --code-only  affiche uniquement le code d'activation`);
     return;
   }
@@ -69,11 +70,12 @@ Options :
   let monthsArg = option('months');
   let name = option('name');
   let start = option('start');
+  const autoStart = hasFlag('auto-start');
 
   if (!device) device = (await rl.question('ID de l’appareil (ou * pour propriétaire) : ')).trim();
   if (!plan && !monthsArg) plan = (await rl.question('Formule (3m, 6m, 1y) : ')).trim();
   if (!name) name = (await rl.question('Nom du client / point de vente : ')).trim();
-  if (!start) {
+  if (!autoStart && !start) {
     start = process.stdin.isTTY
       ? (await rl.question(`Date de début [${todayKey()}] : `)).trim() || todayKey()
       : todayKey();
@@ -81,7 +83,9 @@ Options :
   rl.close();
 
   if (!device) throw new Error('ID appareil obligatoire');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) throw new Error('Date de début invalide (AAAA-MM-JJ)');
+  if (!autoStart && !/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+    throw new Error('Date de début invalide (AAAA-MM-JJ)');
+  }
 
   const months = monthsArg ? Number(monthsArg) : PLANS[plan];
   if (!Number.isInteger(months) || months < 1 || months > 240) {
@@ -89,17 +93,29 @@ Options :
   }
   if (!plan) plan = 'custom';
 
-  const end = addMonths(start, months);
-  const payload = {
-    a: 'wifipro',
-    v: 1,
-    d: device,
-    p: plan,
-    n: name || 'Client',
-    s: start,
-    e: end,
-    i: new Date().toISOString(),
-  };
+  const end = autoStart ? null : addMonths(start, months);
+  const payload = autoStart
+    ? {
+        a: 'wifipro',
+        v: 1,
+        d: device,
+        p: plan,
+        n: name || 'Client',
+        s: 'auto',
+        e: 'auto',
+        m: months,
+        i: new Date().toISOString(),
+      }
+    : {
+        a: 'wifipro',
+        v: 1,
+        d: device,
+        p: plan,
+        n: name || 'Client',
+        s: start,
+        e: end,
+        i: new Date().toISOString(),
+      };
   const payloadText = JSON.stringify(payload);
 
   const keyFile = path.join(__dirname, 'license-key.json');
@@ -132,8 +148,13 @@ Options :
   console.log(`Appareil : ${device}`);
   console.log(`Client   : ${payload.n}`);
   console.log(`Formule  : ${plan} (${months} mois)`);
-  console.log(`Du       : ${start}`);
-  console.log(`Au       : ${end}`);
+  if (autoStart) {
+    console.log('Début    : à l’activation');
+    console.log(`Fin      : ${months} mois après activation`);
+  } else {
+    console.log(`Du       : ${start}`);
+    console.log(`Au       : ${end}`);
+  }
   console.log('');
   console.log('Code d’activation à envoyer au client :');
   console.log('');
