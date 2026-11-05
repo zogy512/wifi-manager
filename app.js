@@ -30,6 +30,10 @@ function licensePlanLabel(id) {
 const DB_KEY = 'wifipro:db:v1';
 const APP_LICENSE_KEY = 'wifipro:app-license:v1';
 const DEVICE_KEY = 'wifipro:device:v1';
+const SHORT_LICENSES_KEY = 'wifipro:short-licenses:v1';
+const SHORT_LICENSES_URL = 'short-licenses.json?v=1.6';
+const SHORT_LICENSE_SALT = 'wifipro-short-v1';
+const SHORT_LICENSE_ITERATIONS = 100000;
 const LOW_STOCK = 2;
 const DAY_MS = 86400000;
 const APP_LICENSE_PUBLIC_KEY = {
@@ -1229,7 +1233,7 @@ function pageMore() {
   <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.5</strong></div>
+      <div><span>Version</span><strong>1.6</strong></div>
       <div><span>Licence application</span><strong>${appLicense ? fmtDay(appLicense.e) : '—'}</strong></div>
       <div><span>ID appareil</span><strong>${esc(fmtDevice(getDeviceId()))}</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
@@ -2179,7 +2183,104 @@ function base64UrlToBytes(value) {
   return bytes;
 }
 
+const normalizeShortCode = (raw) => String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+async function shortCodeHash(code) {
+  const material = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(code),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: new TextEncoder().encode(SHORT_LICENSE_SALT),
+      iterations: SHORT_LICENSE_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    material,
+    256
+  );
+  return Array.from(new Uint8Array(bits))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+let shortRegistryCache = null;
+
+async function loadShortRegistry() {
+  if (shortRegistryCache) return shortRegistryCache;
+  try {
+    const res = await fetch(SHORT_LICENSES_URL, { cache: 'no-store' });
+    if (res && res.ok) {
+      const data = await res.json();
+      if (data && data.codes && typeof data.codes === 'object') {
+        shortRegistryCache = data;
+        try {
+          localStorage.setItem(SHORT_LICENSES_KEY, JSON.stringify(data));
+        } catch (e) {
+          /* stockage indisponible */
+        }
+        return data;
+      }
+    }
+  } catch (e) {
+    /* hors ligne : on utilise le cache local */
+  }
+  try {
+    const cached = JSON.parse(localStorage.getItem(SHORT_LICENSES_KEY) || 'null');
+    if (cached && cached.codes && typeof cached.codes === 'object') {
+      shortRegistryCache = cached;
+      return cached;
+    }
+  } catch (e) {
+    /* cache illisible */
+  }
+  return { codes: {} };
+}
+
+async function verifyShortAppLicenseCode(rawCode, activatedAt = null) {
+  const code = normalizeShortCode(rawCode);
+  if (code.length < 8 || code.length > 12) return null;
+  let registry;
+  try {
+    registry = await loadShortRegistry();
+  } catch (e) {
+    return null;
+  }
+  let hash;
+  try {
+    hash = await shortCodeHash(code);
+  } catch (e) {
+    return null;
+  }
+  const entry = registry && registry.codes ? registry.codes[hash] : null;
+  if (!entry) return null;
+  const months = Number(entry.m);
+  if (!Number.isInteger(months) || months < 1 || months > 240) return null;
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(activatedAt || '') ? activatedAt : todayKey();
+  return {
+    ok: true,
+    payload: {
+      a: 'wifipro',
+      v: 1,
+      d: '*',
+      p: entry.p || 'custom',
+      n: entry.n || 'Client',
+      s: start,
+      e: addMonthsToDateKey(start, months),
+      m: months,
+      auto: true,
+      short: true,
+    },
+  };
+}
+
 async function verifyAppLicenseCode(rawCode, activatedAt = null) {
+  const shortResult = await verifyShortAppLicenseCode(rawCode, activatedAt);
+  if (shortResult) return shortResult;
   const code = String(rawCode || '').replace(/\s+/g, '');
   const [payloadPart, signaturePart] = code.split('.');
   if (!payloadPart || !signaturePart) return { ok: false, reason: 'Code d’activation invalide.' };
@@ -2339,22 +2440,23 @@ function showGate(expired = null) {
           </div>`
         ).join('')}
       </div>
-      <p class="hint">La demande arrive au ${esc(wa)}. Envoyez aussi votre ID appareil ci-dessous.</p>
+      <p class="hint">La demande arrive au ${esc(wa)}. Avec un code de stock court, l’ID appareil n’est pas nécessaire.</p>
     </section>
 
     <section class="card">
       <div class="card-head"><h3>Activer l’application</h3><span class="badge info">Code</span></div>
-      <p class="hint">Communiquez cet ID appareil au gérant avec votre demande :</p>
+      <p class="hint">Code de stock court (ex. <strong>Atu3-16yeih</strong>) : saisis-le directement. Pour une licence liée à cet appareil, communique cet ID :</p>
       <div class="device-box">
         <strong>${esc(fmtDevice(device))}</strong>
         <button class="btn subtle sm" type="button" data-action="copy-device">Copier</button>
       </div>
       <form id="activateLicenseForm" class="activate-form">
         <label class="field"><span>Code d’activation reçu sur WhatsApp</span>
-          <textarea name="code" rows="3" placeholder="Collez ici le code reçu" required></textarea>
+          <textarea name="code" rows="3" placeholder="Ex. Atu3-16yeih (ou ancien code long)" required></textarea>
         </label>
         <button class="btn block" type="submit">${icon('check')}Activer l’application</button>
         <p class="hint" id="activateMsg" aria-live="polite"></p>
+        <p class="hint">Les majuscules/minuscules et le tiret sont facultatifs.</p>
       </form>
     </section>
 
