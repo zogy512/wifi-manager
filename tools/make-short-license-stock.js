@@ -46,8 +46,8 @@ if (hasFlag('help') || hasFlag('h')) {
                                          [--out ~/wifi-licences.txt]
                                          [--registry ./short-licenses.json]
 
-Génère des codes courts du type Atu3-16yeih, le fichier de stock privé et
-le registre public (empreintes SHA-256) utilisé par l'application.
+Génère des codes aléatoires de 16 caractères (ex. Fd3k-9Qlm-Px2v-Rt7c),
+le fichier de stock privé et le registre public (empreintes PBKDF2).
 
 Options :
   --count     nombre de codes par formule (défaut : 10)
@@ -79,27 +79,47 @@ if (fs.existsSync(registryFile)) {
 }
 
 const randomChar = () => ALPHABET[randomInt(0, ALPHABET.length)];
+const randomRef = () => {
+  let ref = '';
+  while (ref.length < 6) ref += randomChar();
+  return ref;
+};
 const randomCode = () => {
   let canonical = '';
-  while (canonical.length < 10) canonical += randomChar();
-  const part1 = canonical.slice(0, 4);
-  const part2 = canonical.slice(4);
-  const display = `${part1.charAt(0)}${part1.slice(1).toLowerCase()}-${part2.toLowerCase()}`;
+  while (canonical.length < 16) canonical += randomChar();
+  const display = canonical
+    .match(/.{4}/g)
+    .map((group) =>
+      group
+        .split('')
+        .map((ch) => (/[A-Z]/.test(ch) && randomInt(0, 2) === 0 ? ch.toLowerCase() : ch))
+        .join('')
+    )
+    .join('-');
   const hash = pbkdf2Sync(canonical, SALT, ITERATIONS, 32, 'sha256').toString('hex');
   return { display, canonical, hash };
 };
 
 const entries = [];
+const usedRefs = new Set(
+  Object.values(registry.codes)
+    .map((entry) => entry && entry.n)
+    .filter(Boolean)
+);
 for (const planId of planIds) {
   const plan = PLANS[planId];
   for (let i = 1; i <= count; i += 1) {
-    const label = `WF-${plan.tag}-${String(i).padStart(3, '0')}`;
+    let ref;
+    do {
+      ref = randomRef();
+    } while (usedRefs.has(ref));
+    usedRefs.add(ref);
     let code;
     do {
       code = randomCode();
     } while (registry.codes[code.hash] || entries.some((e) => e.hash === code.hash));
-    registry.codes[code.hash] = { p: planId, m: plan.months, n: label, c: todayKey() };
-    entries.push({ planId, plan, label, ...code });
+    registry.codes[code.hash] = { p: planId, m: plan.months, n: ref, c: todayKey() };
+    entries.push({ planId, plan, ref, ...code });
   }
 }
 
@@ -120,18 +140,17 @@ lines.push(
 lines.push('');
 lines.push('MODE D’EMPLOI');
 lines.push('1. Le client ouvre l’application puis va dans « Activer l’application ».');
-lines.push('2. Il saisit le code court indiqué sous « CODE : » (ex. Atu3-16yeih).');
+lines.push('2. Il saisit le code aléatoire indiqué sous « CODE : » (ex. Fd3k-9Qlm-Px2v-Rt7c).');
 lines.push('3. La durée commence le jour de l’activation, pas le jour de la génération.');
 lines.push('4. Le code fonctionne sur tout appareil et n’est pas à usage unique.');
-lines.push('5. Garde ce fichier privé : toute personne ayant un code peut l’utiliser.');
+lines.push('5. Les codes et les références sont aléatoires : aucune suite prévisible.');
+lines.push('6. Garde ce fichier privé : toute personne ayant un code peut l’utiliser.');
 lines.push('');
 lines.push('RÉSUMÉ');
 for (const planId of planIds) {
   const plan = PLANS[planId];
   const ofPlan = entries.filter((e) => e.planId === planId);
-  lines.push(
-    `${plan.label.toUpperCase()} : ${ofPlan.length} codes (${ofPlan[0].label} à ${ofPlan[ofPlan.length - 1].label}) — ${nf.format(plan.price)} F`
-  );
+  lines.push(`${plan.label.toUpperCase()} : ${ofPlan.length} codes — ${nf.format(plan.price)} F`);
 }
 lines.push('');
 lines.push(sep);
@@ -140,7 +159,7 @@ lines.push('');
 entries.forEach((entry, index) => {
   lines.push(`LICENCE ${String(index + 1).padStart(2, '0')} / ${total}`);
   lines.push(`Formule   : ${entry.plan.label.toUpperCase()} — ${nf.format(entry.plan.price)} F`);
-  lines.push(`Référence : ${entry.label}`);
+  lines.push(`Référence : ${entry.ref}`);
   lines.push('Client    : ______________________________');
   lines.push('Envoyée le: __________________');
   lines.push('CODE :');

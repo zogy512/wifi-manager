@@ -1,15 +1,15 @@
 'use strict';
 
-const CACHE = 'wifipro-v8';
+const CACHE = 'wifipro-v9';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
-  './styles.css?v=1.6',
+  './styles.css?v=1.7',
   './app.js',
-  './app.js?v=1.6',
+  './app.js?v=1.7',
   './manifest.json',
-  './short-licenses.json?v=1.6',
+  './short-licenses.json?v=1.7',
   './icons/icon-180.png',
   './icons/icon-192.png',
   './icons/icon-512.png',

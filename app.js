@@ -31,7 +31,7 @@ const DB_KEY = 'wifipro:db:v1';
 const APP_LICENSE_KEY = 'wifipro:app-license:v1';
 const DEVICE_KEY = 'wifipro:device:v1';
 const SHORT_LICENSES_KEY = 'wifipro:short-licenses:v1';
-const SHORT_LICENSES_URL = 'short-licenses.json?v=1.6';
+const SHORT_LICENSES_URL = 'short-licenses.json?v=1.7';
 const SHORT_LICENSE_SALT = 'wifipro-short-v1';
 const SHORT_LICENSE_ITERATIONS = 100000;
 const LOW_STOCK = 2;
@@ -1233,7 +1233,7 @@ function pageMore() {
   <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.6</strong></div>
+      <div><span>Version</span><strong>1.7</strong></div>
       <div><span>Licence application</span><strong>${appLicense ? fmtDay(appLicense.e) : '—'}</strong></div>
       <div><span>ID appareil</span><strong>${esc(fmtDevice(getDeviceId()))}</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
@@ -2243,7 +2243,7 @@ async function loadShortRegistry() {
 
 async function verifyShortAppLicenseCode(rawCode, activatedAt = null) {
   const code = normalizeShortCode(rawCode);
-  if (code.length < 8 || code.length > 12) return null;
+  if (code.length < 8 || code.length > 24) return null;
   let registry;
   try {
     registry = await loadShortRegistry();
@@ -2445,14 +2445,14 @@ function showGate(expired = null) {
 
     <section class="card">
       <div class="card-head"><h3>Activer l’application</h3><span class="badge info">Code</span></div>
-      <p class="hint">Code de stock court (ex. <strong>Atu3-16yeih</strong>) : saisis-le directement. Pour une licence liée à cet appareil, communique cet ID :</p>
+      <p class="hint">Code de stock court (ex. <strong>Fd3k-9Qlm-Px2v-Rt7c</strong>) : saisis-le directement. Pour une licence liée à cet appareil, communique cet ID :</p>
       <div class="device-box">
         <strong>${esc(fmtDevice(device))}</strong>
         <button class="btn subtle sm" type="button" data-action="copy-device">Copier</button>
       </div>
       <form id="activateLicenseForm" class="activate-form">
         <label class="field"><span>Code d’activation reçu sur WhatsApp</span>
-          <textarea name="code" rows="3" placeholder="Ex. Atu3-16yeih (ou ancien code long)" required></textarea>
+          <textarea name="code" rows="3" placeholder="Ex. Fd3k-9Qlm-Px2v-Rt7c (ou ancien code long)" required></textarea>
         </label>
         <button class="btn block" type="submit">${icon('check')}Activer l’application</button>
         <p class="hint" id="activateMsg" aria-live="polite"></p>
