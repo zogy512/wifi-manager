@@ -73,23 +73,9 @@ if (fs.existsSync(out) && !hasFlag('force')) {
 
 const tool = path.join(__dirname, 'make-license.js');
 const batch = stamp();
-const lines = [];
-lines.push('STOCK DE LICENCES WIFIPRO');
-lines.push(`Généré le ${todayKey()} à ${batch.slice(11).replace('-', ':')}`);
-lines.push('');
-lines.push('Ces codes ne sont pas liés à un appareil : ils fonctionnent sur tout téléphone.');
-lines.push('La durée (3, 6 ou 12 mois) démarre le jour de l’activation.');
-lines.push('Notez le client à qui vous envoyez chaque code.');
-lines.push('ATTENTION : un code n’est pas à usage unique. Gardez ce fichier privé.');
-lines.push('');
-lines.push('Prix indicatifs : 3 mois = 2 000 F · 6 mois = 5 000 F · 1 an = 10 000 F.');
-lines.push('');
-
-let total = 0;
+const entries = [];
 for (const planId of planIds) {
   const plan = PLANS[planId];
-  lines.push(`=== ${plan.label.toUpperCase()} — ${nf.format(plan.price)} F ===`);
-  lines.push('');
   for (let i = 1; i <= count; i += 1) {
     const label = `WF-${plan.tag}-${String(i).padStart(3, '0')}`;
     const code = execFileSync(
@@ -107,12 +93,50 @@ for (const planId of planIds) {
       ],
       { encoding: 'utf8' }
     ).trim();
-    lines.push(`${label} | client : __________________ | envoyé le : ____________`);
-    lines.push(code);
-    lines.push('');
-    total += 1;
+    entries.push({ planId, plan, label, code });
   }
 }
+
+const total = entries.length;
+const sep = '═'.repeat(64);
+const thin = '─'.repeat(64);
+const lines = [];
+lines.push('WIFIPRO — STOCK DE LICENCES');
+lines.push(
+  `Généré le ${new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long' }).format(new Date())} à ${batch.slice(11).replace('-', ':')}`
+);
+lines.push('');
+lines.push('MODE D’EMPLOI');
+lines.push('1. Chaque licence est présentée dans un bloc séparé.');
+lines.push('2. Envoyez au client uniquement le code situé sous la ligne « CODE : ».');
+lines.push('3. Notez le nom du client et la date d’envoi dans le bloc.');
+lines.push('4. La durée commence le jour de l’activation, pas le jour de la génération.');
+lines.push('5. Un code n’est pas à usage unique : gardez ce fichier privé.');
+lines.push('');
+lines.push('RÉSUMÉ');
+for (const planId of planIds) {
+  const plan = PLANS[planId];
+  const ofPlan = entries.filter((e) => e.planId === planId);
+  lines.push(
+    `${plan.label.toUpperCase()} : ${ofPlan.length} codes (${ofPlan[0].label} à ${ofPlan[ofPlan.length - 1].label}) — ${nf.format(plan.price)} F`
+  );
+}
+lines.push('');
+lines.push(sep);
+lines.push('');
+
+entries.forEach((entry, index) => {
+  lines.push(`LICENCE ${String(index + 1).padStart(2, '0')} / ${total}`);
+  lines.push(`Formule   : ${entry.plan.label.toUpperCase()} — ${nf.format(entry.plan.price)} F`);
+  lines.push(`Référence : ${entry.label}`);
+  lines.push('Client    : ______________________________');
+  lines.push('Envoyée le: __________________');
+  lines.push('CODE :');
+  lines.push(entry.code);
+  lines.push('');
+  lines.push(thin);
+  lines.push('');
+});
 
 fs.writeFileSync(out, lines.join('\n'), { mode: 0o600 });
 fs.chmodSync(out, 0o600);
