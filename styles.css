@@ -564,6 +564,68 @@ tfoot td { font-weight: 700; border-top: 2px solid var(--line); border-bottom: 0
 }
 .hidden { display: none !important; }
 
+/* ---------- Verrouillage PIN ---------- */
+body.locked { overflow: hidden; }
+body.locked .topbar,
+body.locked .app,
+body.locked .bottomnav { display: none; }
+.lock {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(800px 420px at 110% -10%, #d9f3e5 0%, transparent 60%),
+    radial-gradient(700px 380px at -20% 0%, #e6f0e9 0%, transparent 55%),
+    var(--bg);
+}
+.lock[hidden] { display: none; }
+.lock-card {
+  width: min(360px, 100%);
+  padding: 28px 22px 22px;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+}
+.lock-logo {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto;
+  border-radius: 18px;
+}
+.lock-logo svg { width: 34px; height: 34px; }
+.lock-card h1 { margin: 14px 0 3px; font-size: 24px; letter-spacing: -.5px; }
+.lock-card form { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.lock-pin {
+  width: 100%;
+  padding: 13px 10px;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+  font-size: 26px;
+  letter-spacing: 10px;
+  text-align: center;
+  outline: none;
+}
+.lock-pin:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 4px var(--brand-soft);
+}
+.lock-error { color: var(--danger); font-size: 12.5px; font-weight: 600; }
+.lock-forgot {
+  margin-top: 14px;
+  padding: 4px;
+  border: 0;
+  background: none;
+  color: var(--brand-dark);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
 @media (min-width: 620px) {
   .kpis { grid-template-columns: repeat(4, 1fr); }
   .quick { grid-template-columns: repeat(3, 1fr); }

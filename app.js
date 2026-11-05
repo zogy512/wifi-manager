@@ -154,6 +154,7 @@ const ICONS = {
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 6"/><path d="M20 4v7h-7"/>',
   smartphone: '<rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/>',
   shield: '<path d="M12 3l7 3v6c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><path d="M12 15v2.5"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/>',
   chat: '<path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 21l2.1-5.3A8.5 8.5 0 1 1 21 11.5Z"/><path d="M8.5 11h.01"/><path d="M12 11h.01"/><path d="M15.5 11h.01"/>',
@@ -190,6 +191,10 @@ function normalize(d) {
           : 10000,
       },
       whatsapp: String(src.settings && src.settings.whatsapp ? src.settings.whatsapp : '').replace(/\D/g, '') || WHATSAPP_DEFAULT,
+      pin:
+        src.settings && src.settings.pin && src.settings.pin.salt && src.settings.pin.hash
+          ? { salt: String(src.settings.pin.salt), hash: String(src.settings.pin.hash) }
+          : null,
     },
   };
 }
@@ -364,6 +369,7 @@ function setActiveNav(page) {
 }
 
 function render() {
+  if (document.body.classList.contains('locked')) return;
   const route = parseHash();
   const known = ['home', 'vendors', 'vendor', 'sales', 'stock', 'more', 'clients', 'licenses', 'reports'];
   if (!known.includes(route.page)) {
@@ -1108,7 +1114,7 @@ function pageMore() {
     </a>
     <a class="menu-item" href="#/licenses">
       <span class="menu-icon">${icon('shield')}</span>
-      <span class="menu-text"><strong>Licences vendeurs</strong><span>Mensuelle, 3 mois ou annuelle</span></span>
+      <span class="menu-text"><strong>Licences vendeurs</strong><span>3 mois, 6 mois ou 1 an</span></span>
       ${icon('chevronRight')}
     </a>
     <a class="menu-item" href="#/reports">
@@ -1130,9 +1136,19 @@ function pageMore() {
   </section>
 
   <section class="card">
+    <div class="card-head"><h3>Sécurité</h3><span class="badge ${db.settings.pin ? 'ok' : 'info'}">${db.settings.pin ? 'PIN activé' : 'Sans code'}</span></div>
+    <p class="muted small" style="margin-bottom:12px">${db.settings.pin ? 'Un code PIN est demandé à l’ouverture de l’application.' : 'Ajoutez un code PIN à 4-6 chiffres pour protéger l’accès à l’application.'}</p>
+    <div class="stack">
+      <button class="btn ghost" data-action="pin-set">${icon(db.settings.pin ? 'edit' : 'lock')}${db.settings.pin ? 'Modifier le code PIN' : 'Définir un code PIN'}</button>
+      ${db.settings.pin ? `<button class="btn subtle" data-action="lock-now">${icon('lock')}Verrouiller maintenant</button>` : ''}
+    </div>
+    ${db.settings.pin ? `<div class="divider"></div><button class="btn danger block" data-action="pin-remove">${icon('trash')}Supprimer le code PIN</button>` : ''}
+  </section>
+
+  <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.2</strong></div>
+      <div><span>Version</span><strong>1.3</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
       <div><span>Types de codes</span><strong>${TYPES.length}</strong></div>
     </div>
@@ -1596,6 +1612,77 @@ function openLicenseSettings() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Formulaire : code PIN                                               */
+/* ------------------------------------------------------------------ */
+
+function openPinForm() {
+  const hasPin = !!db.settings.pin;
+  openSheet({
+    title: hasPin ? 'Modifier le code PIN' : 'Définir un code PIN',
+    subtitle: 'Choisissez 4 à 6 chiffres. Il sera demandé à l’ouverture de l’app.',
+    submitText: hasPin ? 'Modifier' : 'Activer',
+    body: `
+      ${hasPin ? `<label class="field"><span>Code PIN actuel *</span><input type="password" name="current" inputmode="numeric" maxlength="6" autocomplete="off" required></label>` : ''}
+      <div class="grid2">
+        <label class="field"><span>Nouveau PIN *</span>
+          <input type="password" name="pin" inputmode="numeric" maxlength="6" autocomplete="new-password" placeholder="4 à 6 chiffres" required>
+        </label>
+        <label class="field"><span>Confirmer *</span>
+          <input type="password" name="confirm" inputmode="numeric" maxlength="6" autocomplete="new-password" placeholder="Répéter" required>
+        </label>
+      </div>
+      <p class="hint">En cas d’oubli, la seule solution est d’effacer les données locales puis de restaurer une sauvegarde.</p>`,
+    async onSubmit(fd) {
+      if (hasPin && !(await verifyPin(String(fd.get('current') || '')))) {
+        toast('Code PIN actuel incorrect');
+        return false;
+      }
+      const pin = String(fd.get('pin') || '').trim();
+      const confirmPin = String(fd.get('confirm') || '').trim();
+      if (!/^\d{4,6}$/.test(pin)) {
+        toast('Le code PIN doit contenir 4 à 6 chiffres');
+        return false;
+      }
+      if (pin !== confirmPin) {
+        toast('Les deux codes ne correspondent pas');
+        return false;
+      }
+      const salt = randomSalt();
+      db.settings.pin = { salt, hash: await hashPin(pin, salt) };
+      save();
+      render();
+      toast(hasPin ? 'Code PIN modifié' : 'Code PIN activé');
+      setTimeout(lockApp, 350);
+      return true;
+    },
+  });
+}
+
+function removePin() {
+  if (!db.settings.pin) return;
+  openSheet({
+    title: 'Supprimer le code PIN',
+    subtitle: 'L’application ne demandera plus de code à l’ouverture.',
+    submitText: 'Supprimer',
+    body: `
+      <label class="field"><span>Code PIN actuel *</span>
+        <input type="password" name="current" inputmode="numeric" maxlength="6" autocomplete="off" required>
+      </label>`,
+    async onSubmit(fd) {
+      if (!(await verifyPin(String(fd.get('current') || '')))) {
+        toast('Code PIN incorrect');
+        return false;
+      }
+      db.settings.pin = null;
+      save();
+      render();
+      toast('Code PIN supprimé');
+      return true;
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Formulaire : client mensuel                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1896,6 +1983,103 @@ function resetData() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Verrouillage par code PIN                                           */
+/* ------------------------------------------------------------------ */
+
+function randomSalt() {
+  try {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    return `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+  }
+}
+
+function fnv1a(value) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+async function hashPin(pin, salt) {
+  const input = `${salt}:${pin}`;
+  try {
+    if (crypto.subtle && crypto.subtle.digest) {
+      const data = new TextEncoder().encode(input);
+      const buffer = await crypto.subtle.digest('SHA-256', data);
+      const hex = [...new Uint8Array(buffer)]
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      return `sha256:${hex}`;
+    }
+  } catch (e) {
+    /* repli si Web Crypto indisponible */
+  }
+  return `fnv:${fnv1a(input)}`;
+}
+
+async function verifyPin(pin) {
+  if (!db.settings.pin) return true;
+  return (await hashPin(String(pin || '').trim(), db.settings.pin.salt)) === db.settings.pin.hash;
+}
+
+function lockApp() {
+  if (!db.settings.pin) return;
+  const lock = $('#lock');
+  if (!lock) return;
+  const sheet = $('#sheet');
+  if (sheet && sheet.open) sheet.close();
+  document.body.classList.add('locked');
+  lock.hidden = false;
+  const input = $('#lockPin');
+  const error = $('#lockError');
+  if (input) input.value = '';
+  if (error) error.hidden = true;
+  if (input) setTimeout(() => input.focus(), 60);
+}
+
+function unlockApp() {
+  document.body.classList.remove('locked');
+  const lock = $('#lock');
+  if (lock) lock.hidden = true;
+  render();
+}
+
+async function handleUnlock(event) {
+  if (event) event.preventDefault();
+  const input = $('#lockPin');
+  const error = $('#lockError');
+  const pin = input ? input.value.trim() : '';
+  if (await verifyPin(pin)) {
+    unlockApp();
+    return;
+  }
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+  if (error) error.hidden = false;
+}
+
+function forgotPin() {
+  if (
+    !confirm(
+      'Code PIN oublié ? Pour réinitialiser l’accès, toutes les données locales seront effacées. Vous pourrez ensuite restaurer une sauvegarde JSON.\n\nContinuer ?'
+    )
+  ) {
+    return;
+  }
+  if (!confirm('Dernière confirmation : effacer toutes les données et réinitialiser le code PIN ?')) return;
+  localStorage.removeItem(DB_KEY);
+  location.hash = '#/home';
+  location.reload();
+}
+
+/* ------------------------------------------------------------------ */
 /* Feuille modale                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -1922,10 +2106,17 @@ function openSheet({ title, subtitle = '', body, submitText = 'Enregistrer', onS
   $$('[data-close]', dlg).forEach((b) => b.addEventListener('click', () => dlg.close()));
 
   const form = $('#sheetForm');
-  form.addEventListener('submit', (e) => {
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
-    const result = onSubmit ? onSubmit(fd, form) : true;
+    let result = true;
+    try {
+      result = onSubmit ? await onSubmit(fd, form) : true;
+    } catch (err) {
+      console.error(err);
+      toast('Une erreur est survenue');
+      return;
+    }
     if (result !== false) dlg.close();
   });
   if (typeof onMount === 'function') onMount(form);
@@ -2045,6 +2236,9 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'install-app': installApp(); break;
+    case 'pin-set': openPinForm(); break;
+    case 'pin-remove': removePin(); break;
+    case 'lock-now': lockApp(); break;
     case 'reset-data': resetData(); break;
     default: break;
   }
@@ -2072,6 +2266,24 @@ if (sheet) {
   });
 }
 
+const lockForm = $('#lockForm');
+if (lockForm) lockForm.addEventListener('submit', handleUnlock);
+const forgotBtn = $('#forgotPin');
+if (forgotBtn) forgotBtn.addEventListener('click', forgotPin);
+
+let hiddenSince = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    hiddenSince = Date.now();
+    return;
+  }
+  if (document.visibilityState === 'visible' && db.settings.pin && hiddenSince) {
+    const away = Date.now() - hiddenSince;
+    hiddenSince = 0;
+    if (away >= 120000) lockApp();
+  }
+});
+
 window.addEventListener('hashchange', render);
 const installBtn = $('#installBtn');
 if (installBtn) installBtn.addEventListener('click', installApp);
@@ -2086,4 +2298,9 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
-render();
+if (db.settings.pin) {
+  lockApp();
+} else {
+  document.body.classList.remove('locked');
+  render();
+}
