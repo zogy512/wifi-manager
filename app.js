@@ -13,6 +13,13 @@ const TYPES = [
 ];
 const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.id, t]));
 
+const LICENSE_PLANS = [
+  { id: '1m', label: 'Mensuelle', months: 1 },
+  { id: '3m', label: '3 mois', months: 3 },
+  { id: '1y', label: 'Annuelle', months: 12 },
+];
+const LICENSE_MAP = Object.fromEntries(LICENSE_PLANS.map((p) => [p.id, p]));
+
 const DB_KEY = 'wifipro:db:v1';
 const LOW_STOCK = 2;
 const DAY_MS = 86400000;
@@ -128,6 +135,7 @@ const ICONS = {
   smartphone: '<rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/>',
   shield: '<path d="M12 3l7 3v6c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/>',
   wifi: '<path d="M3.5 9.5a13 13 0 0 1 17 0"/><path d="M6.5 13a8.5 8.5 0 0 1 11 0"/><path d="M9.5 16.4a4 4 0 0 1 5 0"/><path d="M12 19.5h.01"/>',
 };
 function icon(name) {
@@ -146,8 +154,14 @@ function normalize(d) {
     sales: Array.isArray(src.sales) ? src.sales : [],
     payments: Array.isArray(src.payments) ? src.payments : [],
     clients: Array.isArray(src.clients) ? src.clients : [],
+    licenses: Array.isArray(src.licenses) ? src.licenses : [],
     settings: {
       name: src.settings && src.settings.name ? String(src.settings.name) : 'WifiPro',
+      licensePrices: {
+        '1m': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['1m']),
+        '3m': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['3m']),
+        '1y': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['1y']),
+      },
     },
   };
 }
@@ -253,13 +267,43 @@ function inPeriod(iso, period) {
   return true;
 }
 
+function dateDaysLeft(key) {
+  if (!key) return -Infinity;
+  return Math.round((parseDateKey(key) - parseDateKey(todayKey())) / DAY_MS);
+}
 function isClientActive(c) {
   return String(c.fin || '') >= todayKey();
 }
-function clientDaysLeft(c) {
-  const end = parseDateKey(c.fin);
-  const today = parseDateKey(todayKey());
-  return Math.round((end - today) / DAY_MS);
+
+function vendorLicense(vendorId) {
+  const list = db.licenses.filter((l) => l.vendorId === vendorId);
+  if (!list.length) return null;
+  return list.reduce((best, l) => (String(l.end) > String(best.end) ? l : best));
+}
+
+function licenseStatus(vendorId) {
+  const license = vendorLicense(vendorId);
+  if (!license) return { state: 'none', license: null, days: null };
+  const days = dateDaysLeft(license.end);
+  return { state: days >= 0 ? 'active' : 'expired', license, days };
+}
+
+function licenseBaseKey(vendorId, startKey) {
+  const license = vendorLicense(vendorId);
+  const start = startKey || todayKey();
+  if (license && String(license.end) >= start) return license.end;
+  return start;
+}
+
+function licenseBlocked(vendorId) {
+  return licenseStatus(vendorId).state !== 'active';
+}
+
+function licenseBadge(vendorId) {
+  const st = licenseStatus(vendorId);
+  if (st.state === 'none') return '<span class="badge danger">Sans licence</span>';
+  if (st.state === 'expired') return '<span class="badge danger">Licence expirée</span>';
+  return `<span class="badge ${st.days <= 7 ? 'warn' : 'ok'}">Licence ${st.days} j</span>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -281,7 +325,7 @@ function parseHash() {
 function setActiveNav(page) {
   const map = {
     home: 'home', vendors: 'vendors', vendor: 'vendors', sales: 'sales',
-    stock: 'stock', more: 'more', clients: 'more', reports: 'more',
+    stock: 'stock', more: 'more', clients: 'more', licenses: 'more', reports: 'more',
   };
   $$('.bottomnav a').forEach((a) => {
     const active = a.dataset.nav === map[page];
@@ -293,7 +337,7 @@ function setActiveNav(page) {
 
 function render() {
   const route = parseHash();
-  const known = ['home', 'vendors', 'vendor', 'sales', 'stock', 'more', 'clients', 'reports'];
+  const known = ['home', 'vendors', 'vendor', 'sales', 'stock', 'more', 'clients', 'licenses', 'reports'];
   if (!known.includes(route.page)) {
     history.replaceState(null, '', '#/home');
     return render();
@@ -310,6 +354,7 @@ function render() {
   else if (page === 'sales') html = pageSales();
   else if (page === 'stock') html = pageStock();
   else if (page === 'clients') html = pageClients();
+  else if (page === 'licenses') html = pageLicenses();
   else if (page === 'reports') html = pageReports();
   else html = pageMore();
 
@@ -373,6 +418,9 @@ function pageHome() {
   const weekTotal = sum(days.map((d) => d.total));
 
   const recent = [...db.sales].sort(byDateDesc).slice(0, 4);
+  const licAlerts = db.vendors
+    .map((v) => ({ v, st: licenseStatus(v.id) }))
+    .filter((x) => x.st.state !== 'active' || x.st.days <= 7);
 
   return `
   <section class="hero">
@@ -402,6 +450,18 @@ function pageHome() {
       .slice(0, 8)
       .map(
         (x) => `<span class="mini-chip">${esc(x.v.nom)} · ${x.t.short} <b>${x.qty}</b></span>`
+      )
+      .join('')}</div>
+  </section>` : ''}
+
+  ${licAlerts.length ? `<section class="card alert-card">
+    <div class="card-head"><h3>Licences vendeurs</h3><a class="link" href="#/licenses">Gérer</a></div>
+    <div class="mini-list">${licAlerts
+      .slice(0, 8)
+      .map(
+        (x) => `<span class="mini-chip">${esc(x.v.nom)} · ${
+          x.st.state === 'none' ? 'sans licence' : x.st.state === 'expired' ? 'expirée' : x.st.days + ' j'
+        }</span>`
       )
       .join('')}</div>
   </section>` : ''}
@@ -478,7 +538,7 @@ function vendorRow(v) {
       <span class="row-title">${esc(v.nom)}${v.actif === false ? ' <span class="badge">Inactif</span>' : ''}</span>
       <span class="row-sub">${esc(v.point || 'Point de vente')}${v.tel ? ' · ' + esc(v.tel) : ''}</span>
     </span>
-    <span class="row-end"><strong>${t.units}</strong><small>codes</small></span>
+    <span class="row-end"><strong>${t.units}</strong><small>codes</small>${licenseBadge(v.id)}</span>
   </a>`;
 }
 
@@ -486,6 +546,7 @@ function pageVendor(id) {
   const v = vendorById(id);
   if (!v) return emptyState('users', 'Vendeur introuvable', 'Ce vendeur a peut-être été supprimé.');
   const t = vendorTotals(v.id);
+  const lic = licenseStatus(v.id);
   const history = vendorHistory(v.id);
 
   const stockRows = TYPES.map(
@@ -554,6 +615,20 @@ function pageVendor(id) {
     <button class="quick-btn" data-action="new-supply" data-vendor="${v.id}">${icon('box')}<span>Appro</span></button>
     <button class="quick-btn" data-action="new-payment" data-vendor="${v.id}">${icon('cash')}<span>Versement</span></button>
   </div>
+
+  <section class="card">
+    <div class="card-head"><h3>Licence vendeur</h3>${licenseBadge(v.id)}</div>
+    ${lic.license
+      ? `<div class="breakdown">
+          <div><span>Formule</span><strong>${LICENSE_MAP[lic.license.plan] ? LICENSE_MAP[lic.license.plan].label : lic.license.plan}</strong></div>
+          <div><span>Du</span><strong>${fmtDay(lic.license.start)}</strong></div>
+          <div><span>Au</span><strong>${fmtDay(lic.license.end)}</strong></div>
+          <div><span>Montant payé</span><strong>${fmt(lic.license.amount)}</strong></div>
+        </div>`
+      : '<p class="muted small">Aucune licence enregistrée. Les ventes sont bloquées pour ce vendeur.</p>'}
+    <div class="divider"></div>
+    <button class="btn block" data-action="new-license" data-vendor="${v.id}">${icon('shield')}${lic.license ? 'Renouveler la licence' : 'Ajouter une licence'}</button>
+  </section>
 
   <section class="card">
     <div class="card-head"><h3>Stock par type de code</h3></div>
@@ -723,7 +798,7 @@ function pageStock() {
 function pageClients() {
   const all = [...db.clients].sort((a, b) => String(a.fin).localeCompare(String(b.fin)));
   const active = all.filter(isClientActive);
-  const expiring = active.filter((c) => clientDaysLeft(c) <= 3);
+  const expiring = active.filter((c) => dateDaysLeft(c.fin) <= 3);
   const filtered = all.filter((c) =>
     clientFilter === 'all' ? true : clientFilter === 'active' ? isClientActive(c) : !isClientActive(c)
   );
@@ -758,7 +833,7 @@ function pageClients() {
 function clientCard(c) {
   const v = vendorById(c.vendorId);
   const active = isClientActive(c);
-  const days = clientDaysLeft(c);
+  const days = dateDaysLeft(c.fin);
   const badge = active
     ? `<span class="badge ${days <= 3 ? 'warn' : 'ok'}">${days === 0 ? 'Dernier jour' : days + ' j restants'}</span>`
     : '<span class="badge danger">Expiré</span>';
@@ -780,6 +855,76 @@ function clientCard(c) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Page : licences vendeurs                                            */
+/* ------------------------------------------------------------------ */
+
+function pageLicenses() {
+  const vendors = [...db.vendors].sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
+  const rows = vendors.map((v) => ({ v, st: licenseStatus(v.id) }));
+  const active = rows.filter((x) => x.st.state === 'active');
+  const expiring = active.filter((x) => x.st.days <= 7);
+  const toFix = rows.filter((x) => x.st.state !== 'active');
+  const monthKey = todayKey().slice(0, 7);
+  const monthRevenue = sum(
+    db.licenses.filter((l) => dateKey(l.date).startsWith(monthKey)).map((l) => l.amount)
+  );
+  const totalRevenue = sum(db.licenses.map((l) => l.amount));
+  const prices = db.settings.licensePrices || {};
+
+  return `
+  <div class="page-head">
+    <div style="display:flex;align-items:center;gap:10px;min-width:0">
+      <a class="icon-btn" href="#/more" aria-label="Retour">${icon('chevronLeft')}</a>
+      <div><h2>Licences</h2><p class="sub">${active.length} active(s) · ${toFix.length} à régulariser</p></div>
+    </div>
+    <button class="btn ghost" data-action="license-settings">${icon('edit')}Tarifs</button>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi accent"><span>Licences actives</span><strong>${active.length}</strong><small>${expiring.length} expire(nt) sous 7 j</small></div>
+    <div class="kpi"><span>À régulariser</span><strong>${toFix.length}</strong><small>ventes bloquées</small></div>
+    <div class="kpi"><span>Revenus ce mois</span><strong>${fmt(monthRevenue)}</strong><small>licences</small></div>
+    <div class="kpi"><span>Total encaissé</span><strong>${fmt(totalRevenue)}</strong><small>${db.licenses.length} licence(s)</small></div>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h3>Vendeurs</h3><button class="btn sm" data-action="new-license">${icon('plus')}Licence</button></div>
+    ${rows.length ? rows.map(licenseRow).join('') : emptyState('shield', 'Aucun vendeur', 'Ajoutez un vendeur avant de créer une licence.')}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h3>Tarifs des licences</h3><button class="btn ghost sm" data-action="license-settings">${icon('edit')}Modifier</button></div>
+    ${LICENSE_PLANS.map(
+      (p) => `<div class="row">
+        <span class="tag">${p.months === 12 ? '1A' : p.months + 'M'}</span>
+        <span class="row-main"><span class="row-title" style="font-size:13.5px">${p.label}</span><span class="row-sub">${p.months} mois</span></span>
+        <span class="row-end"><strong>${num(prices[p.id]) > 0 ? fmt(prices[p.id]) : 'À définir'}</strong></span>
+      </div>`
+    ).join('')}
+  </section>`;
+}
+
+function licenseRow(x) {
+  const { v, st } = x;
+  const plan = st.license && LICENSE_MAP[st.license.plan];
+  const sub =
+    st.state === 'none'
+      ? 'Aucune licence — ventes bloquées'
+      : st.state === 'expired'
+        ? `Expirée le ${fmtDay(st.license.end)} — ventes bloquées`
+        : `${plan ? plan.label : ''} · ${fmt(st.license.amount)} · jusqu’au ${fmtDay(st.license.end)}`;
+
+  return `<div class="row">
+    <span class="avatar">${esc(initials(v.nom))}</span>
+    <span class="row-main">
+      <span class="row-title">${esc(v.nom)} ${licenseBadge(v.id)}</span>
+      <span class="row-sub">${esc(sub)}</span>
+    </span>
+    <button class="btn ${st.state === 'active' ? 'ghost' : ''} sm" data-action="new-license" data-vendor="${v.id}">${st.state === 'active' ? 'Renouveler' : 'Activer'}</button>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Page : rapports                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -787,11 +932,19 @@ function pageReports() {
   const sales = db.sales.filter((s) => inPeriod(s.date, reportPeriod));
   const supplies = db.supplies.filter((s) => inPeriod(s.date, reportPeriod));
   const payments = db.payments.filter((p) => inPeriod(p.date, reportPeriod));
+  const licenses = db.licenses.filter((l) => inPeriod(l.date, reportPeriod));
 
   const salesTotal = sum(sales.map((s) => s.total));
   const supplyValue = sum(supplies.map(supplyTotal));
   const paymentValue = sum(payments.map((p) => p.amount));
+  const licenseRevenue = sum(licenses.map((l) => l.amount));
   const totalDue = db.vendors.reduce((a, v) => a + Math.max(0, vendorTotals(v.id).balance), 0);
+  const activeLicenses = db.vendors.filter((v) => licenseStatus(v.id).state === 'active').length;
+
+  const byPlan = LICENSE_PLANS.map((p) => {
+    const list = licenses.filter((l) => l.plan === p.id);
+    return { p, count: list.length, amount: sum(list.map((l) => l.amount)) };
+  });
 
   const byType = TYPES.map((t) => {
     const list = sales.filter((s) => s.type === t.id);
@@ -827,8 +980,10 @@ function pageReports() {
 
   <div class="kpis">
     <div class="kpi accent"><span>CA ventes</span><strong>${fmt(salesTotal)}</strong><small>${sales.length} vente(s)</small></div>
+    <div class="kpi"><span>Revenus licences</span><strong>${fmt(licenseRevenue)}</strong><small>${licenses.length} licence(s)</small></div>
     <div class="kpi"><span>Approvisionnements</span><strong>${fmt(supplyValue)}</strong><small>${supplies.length} opération(s)</small></div>
     <div class="kpi"><span>Versements</span><strong>${fmt(paymentValue)}</strong><small>${payments.length} versement(s)</small></div>
+    <div class="kpi"><span>Licences actives</span><strong>${activeLicenses}</strong><small>sur ${db.vendors.length} vendeur(s)</small></div>
     <div class="kpi"><span>Dettes totales</span><strong>${fmt(totalDue)}</strong><small>toutes périodes</small></div>
   </div>
 
@@ -845,6 +1000,24 @@ function pageReports() {
       </div>`
       )
       .join('')}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h3>Licences vendues</h3><span class="muted small">${fmt(licenseRevenue)}</span></div>
+    ${licenses.length
+      ? byPlan
+          .map(
+            (x) => `<div class="report-row">
+          <span class="label">${x.p.months === 12 ? '1 an' : x.p.months + ' mois'}</span>
+          <div>
+            <div class="progress"><span style="width:${licenseRevenue ? Math.max(2, (x.amount / licenseRevenue) * 100) : 0}%"></span></div>
+            <span class="muted small">${x.count} licence(s)</span>
+          </div>
+          <span class="value">${fmt(x.amount)}</span>
+        </div>`
+          )
+          .join('')
+      : emptyState('shield', 'Aucune licence sur cette période', 'Les licences vendeurs apparaîtront ici.')}
   </section>
 
   <section class="card">
@@ -869,6 +1042,7 @@ function pageReports() {
       <button class="btn subtle" data-action="export-supplies">${icon('download')}Approvisionnements</button>
       <button class="btn subtle" data-action="export-payments">${icon('download')}Versements</button>
       <button class="btn subtle" data-action="export-clients">${icon('download')}Clients mensuels</button>
+      <button class="btn subtle" data-action="export-licenses">${icon('download')}Licences vendeurs</button>
     </div>
   </section>`;
 }
@@ -880,7 +1054,7 @@ function pageReports() {
 function pageMore() {
   return `
   <div class="page-head">
-    <div><h2>Plus</h2><p class="sub">Clients, rapports et sauvegarde</p></div>
+    <div><h2>Plus</h2><p class="sub">Clients, licences, rapports et sauvegarde</p></div>
   </div>
 
   <div class="card menu">
@@ -889,27 +1063,33 @@ function pageMore() {
       <span class="menu-text"><strong>Clients mensuels</strong><span>Abonnements à ${fmt(3000)} et renouvellements</span></span>
       ${icon('chevronRight')}
     </a>
+    <a class="menu-item" href="#/licenses">
+      <span class="menu-icon">${icon('shield')}</span>
+      <span class="menu-text"><strong>Licences vendeurs</strong><span>Mensuelle, 3 mois ou annuelle</span></span>
+      ${icon('chevronRight')}
+    </a>
     <a class="menu-item" href="#/reports">
       <span class="menu-icon">${icon('chart')}</span>
-      <span class="menu-text"><strong>Rapports</strong><span>CA, ventes par type et par vendeur</span></span>
+      <span class="menu-text"><strong>Rapports</strong><span>CA, ventes, licences et vendeurs</span></span>
       ${icon('chevronRight')}
     </a>
   </div>
 
   <section class="card">
     <div class="card-head"><h3>Sauvegarde des données</h3><span class="badge info">Local</span></div>
-    <p class="muted small" style="margin-bottom:12px">Sauvegardez régulièrement vos données. Le fichier JSON peut être restauré sur un autre appareil.</p>
+    <p class="muted small" style="margin-bottom:12px">Téléchargez la sauvegarde ou envoyez-la directement vers Gmail via le partage Android (fichier JSON en pièce jointe).</p>
     <div class="grid2">
       <button class="btn ghost" data-action="export-backup">${icon('download')}Sauvegarder</button>
       <button class="btn subtle" data-action="import-backup">${icon('upload')}Restaurer</button>
     </div>
+    <button class="btn block" style="margin-top:9px" data-action="share-backup">${icon('mail')}Envoyer sur Gmail</button>
     <input type="file" id="restoreFile" accept="application/json,.json" class="hidden">
   </section>
 
   <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.0</strong></div>
+      <div><span>Version</span><strong>1.1</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
       <div><span>Types de codes</span><strong>${TYPES.length}</strong></div>
     </div>
@@ -971,13 +1151,14 @@ function deleteVendor(id) {
     db.supplies.filter((x) => x.vendorId === id).length +
     db.sales.filter((x) => x.vendorId === id).length +
     db.payments.filter((x) => x.vendorId === id).length +
-    db.clients.filter((x) => x.vendorId === id).length;
+    db.clients.filter((x) => x.vendorId === id).length +
+    db.licenses.filter((x) => x.vendorId === id).length;
   const msg = count
     ? `Supprimer ${v.nom} et tout son historique (${count} opération(s)) ?`
     : `Supprimer ${v.nom} ?`;
   if (!confirm(msg)) return;
   db.vendors = db.vendors.filter((x) => x.id !== id);
-  ['supplies', 'sales', 'payments', 'clients'].forEach((k) => {
+  ['supplies', 'sales', 'payments', 'clients', 'licenses'].forEach((k) => {
     db[k] = db[k].filter((x) => x.vendorId !== id);
   });
   save();
@@ -1037,6 +1218,7 @@ function openSaleForm(vendorId) {
         </label>
       </div>
       <p class="hint" id="saleHint"></p>
+      <p class="hint" id="licenseHint"></p>
       <label class="field"><span>Note (optionnel)</span>
         <input name="note" maxlength="120" placeholder="Ex : client au marché">
       </label>`,
@@ -1046,6 +1228,7 @@ function openSaleForm(vendorId) {
       const unit = form.querySelector('[name="unit"]');
       const qty = form.querySelector('[name="qty"]');
       const hint = form.querySelector('#saleHint');
+      const licenseHint = form.querySelector('#licenseHint');
 
       const updateHint = () => {
         const ty = TYPE_MAP[typeSel.value];
@@ -1053,6 +1236,18 @@ function openSaleForm(vendorId) {
         const needed = Math.max(0, Math.round(num(qty.value, 0)));
         hint.textContent = `Stock disponible : ${stock} ${ty ? ty.short : ''}${needed > stock ? ' — stock insuffisant' : ''}`;
         hint.classList.toggle('warn', needed > stock);
+
+        const st = licenseStatus(vendorSel.value);
+        if (st.state === 'active') {
+          licenseHint.textContent = `Licence active jusqu’au ${fmtDay(st.license.end)}.`;
+          licenseHint.classList.remove('warn');
+        } else if (st.state === 'expired') {
+          licenseHint.textContent = `Licence expirée le ${fmtDay(st.license.end)} — ventes bloquées.`;
+          licenseHint.classList.add('warn');
+        } else {
+          licenseHint.textContent = 'Aucune licence pour ce vendeur — ventes bloquées.';
+          licenseHint.classList.add('warn');
+        }
       };
 
       typeSel.addEventListener('change', () => {
@@ -1077,6 +1272,10 @@ function openSaleForm(vendorId) {
       }
       if (!TYPE_MAP[type]) {
         toast('Choisissez un type de code');
+        return false;
+      }
+      if (licenseBlocked(vendorId)) {
+        alert('Licence vendeur expirée ou absente. Ajoutez ou renouvelez sa licence avant toute vente.');
         return false;
       }
       const available = vendorStock(vendorId)[type] ?? 0;
@@ -1230,6 +1429,127 @@ function openPaymentForm(vendorId) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Formulaire : licence vendeur                                        */
+/* ------------------------------------------------------------------ */
+
+function openLicenseForm(vendorId) {
+  if (!ensureVendors()) return;
+  const selected = vendorId || db.vendors[0].id;
+  const prices = db.settings.licensePrices || {};
+
+  openSheet({
+    title: 'Licence vendeur',
+    subtitle: 'Formule mensuelle, 3 mois ou annuelle.',
+    submitText: 'Enregistrer',
+    body: `
+      <label class="field"><span>Vendeur *</span>
+        <select name="vendorId" required>${vendorOptions(selected)}</select>
+      </label>
+      <div class="grid2">
+        <label class="field"><span>Formule</span>
+          <select name="plan">
+            ${LICENSE_PLANS.map((p) => `<option value="${p.id}">${p.label} (${p.months} mois)</option>`).join('')}
+          </select>
+        </label>
+        <label class="field"><span>Montant payé (F)</span>
+          <input type="number" name="amount" min="0" step="1" inputmode="numeric" value="${num(prices['1m'])}">
+        </label>
+      </div>
+      <label class="field"><span>Début souhaité</span>
+        <input type="date" name="start" value="${todayKey()}">
+      </label>
+      <p class="hint" id="licenseCalc"></p>
+      <label class="field"><span>Note (optionnel)</span>
+        <input name="note" maxlength="120" placeholder="Ex : paiement mobile money">
+      </label>`,
+    onMount(form) {
+      const vendorSel = form.querySelector('[name="vendorId"]');
+      const planSel = form.querySelector('[name="plan"]');
+      const startInput = form.querySelector('[name="start"]');
+      const amount = form.querySelector('[name="amount"]');
+      const calc = form.querySelector('#licenseCalc');
+
+      const updateCalc = () => {
+        const start = startInput.value || todayKey();
+        const base = licenseBaseKey(vendorSel.value, start);
+        const plan = LICENSE_MAP[planSel.value];
+        const end = addMonthsToDateKey(base, plan.months);
+        const existing = vendorLicense(vendorSel.value);
+        calc.textContent =
+          existing && String(existing.end) >= start
+            ? `Licence actuelle jusqu’au ${fmtDay(existing.end)}. Nouvelle période : ${fmtDay(base)} → ${fmtDay(end)}.`
+            : `Nouvelle licence : ${fmtDay(base)} → ${fmtDay(end)}.`;
+      };
+
+      planSel.addEventListener('change', () => {
+        const price = Math.max(0, num(prices[planSel.value]));
+        if (price > 0) amount.value = price;
+        updateCalc();
+      });
+      vendorSel.addEventListener('change', updateCalc);
+      startInput.addEventListener('change', updateCalc);
+      updateCalc();
+    },
+    onSubmit(fd) {
+      const vendorId = String(fd.get('vendorId') || '');
+      const plan = LICENSE_MAP[String(fd.get('plan') || '')];
+      const amount = Math.max(0, num(fd.get('amount'), 0));
+      const startKey = String(fd.get('start') || todayKey());
+      if (!vendorById(vendorId)) {
+        toast('Choisissez un vendeur');
+        return false;
+      }
+      if (!plan) {
+        toast('Choisissez une formule');
+        return false;
+      }
+      const base = licenseBaseKey(vendorId, startKey);
+      const end = addMonthsToDateKey(base, plan.months);
+      db.licenses.push({
+        id: uid(), vendorId, plan: plan.id, amount,
+        start: base, end, date: nowISO(),
+        note: String(fd.get('note') || '').trim(),
+      });
+      save();
+      render();
+      toast(`Licence valable jusqu’au ${fmtDay(end)}`);
+      return true;
+    },
+  });
+}
+
+function openLicenseSettings() {
+  const prices = db.settings.licensePrices || {};
+  openSheet({
+    title: 'Tarifs des licences',
+    subtitle: 'Définissez le prix de chaque formule vendeur.',
+    submitText: 'Enregistrer',
+    body: `
+      <label class="field"><span>Mensuelle (1 mois)</span>
+        <input type="number" name="p_1m" min="0" step="1" inputmode="numeric" value="${num(prices['1m'])}">
+      </label>
+      <label class="field"><span>3 mois</span>
+        <input type="number" name="p_3m" min="0" step="1" inputmode="numeric" value="${num(prices['3m'])}">
+      </label>
+      <label class="field"><span>Annuelle (12 mois)</span>
+        <input type="number" name="p_1y" min="0" step="1" inputmode="numeric" value="${num(prices['1y'])}">
+      </label>
+      <p class="hint">Ces montants préremplissent le formulaire de licence et restent modifiables à chaque paiement.</p>`,
+    onSubmit(fd) {
+      db.settings.licensePrices = {
+        '1m': Math.max(0, num(fd.get('p_1m'), 0)),
+        '3m': Math.max(0, num(fd.get('p_3m'), 0)),
+        '1y': Math.max(0, num(fd.get('p_1y'), 0)),
+      };
+      save();
+      render();
+      toast('Tarifs enregistrés');
+      return true;
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Formulaire : client mensuel                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1271,6 +1591,10 @@ function openClientForm() {
       }
       if (!vendorById(vendorId)) {
         toast('Choisissez un vendeur');
+        return false;
+      }
+      if (licenseBlocked(vendorId)) {
+        alert('Licence vendeur expirée ou absente. Renouvelez sa licence avant de créer un abonnement.');
         return false;
       }
       const available = vendorStock(vendorId)['1m'] ?? 0;
@@ -1319,6 +1643,10 @@ function openRenewClient(clientId) {
       const vendorId = String(fd.get('vendorId') || '');
       if (!vendorById(vendorId)) {
         toast('Choisissez un vendeur');
+        return false;
+      }
+      if (licenseBlocked(vendorId)) {
+        alert('Licence vendeur expirée ou absente. Renouvelez sa licence avant de prolonger un abonnement.');
         return false;
       }
       const montant = Math.max(0, num(fd.get('montant'), 3000));
@@ -1447,6 +1775,43 @@ function exportClientsCSV() {
     });
   download(`wifipro-clients-${todayKey()}.csv`, csv(rows));
   toast('Export des clients prêt');
+}
+
+function exportLicensesCSV() {
+  const rows = [['Date paiement', 'Vendeur', 'Formule', 'Début', 'Fin', 'Montant', 'Note']];
+  [...db.licenses].sort(byDateDesc).forEach((l) => {
+    const v = vendorById(l.vendorId);
+    rows.push([
+      fmtDateTimeCSV(l.date), v ? v.nom : 'Vendeur supprimé',
+      LICENSE_MAP[l.plan] ? LICENSE_MAP[l.plan].label : l.plan,
+      fmtDay(l.start), fmtDay(l.end), l.amount, l.note || '',
+    ]);
+  });
+  download(`wifipro-licences-${todayKey()}.csv`, csv(rows));
+  toast('Export des licences prêt');
+}
+
+async function shareBackup() {
+  const name = `wifipro-sauvegarde-${todayKey()}.json`;
+  const content = JSON.stringify(db, null, 2);
+  try {
+    const file = new File([content], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: 'Sauvegarde WifiPro',
+        text: 'Sauvegarde des données WifiPro à conserver.',
+      });
+      toast('Sauvegarde partagée');
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+  download(name, content, 'application/json;charset=utf-8');
+  alert(
+    'Le partage direct n’est pas disponible. La sauvegarde a été téléchargée : joignez-la à un email Gmail depuis vos fichiers.'
+  );
 }
 
 function exportBackup() {
@@ -1596,6 +1961,8 @@ document.addEventListener('click', (e) => {
     case 'new-client': openClientForm(); break;
     case 'renew-client': openRenewClient(id); break;
     case 'delete-client': deleteClient(id); break;
+    case 'new-license': openLicenseForm(vendor); break;
+    case 'license-settings': openLicenseSettings(); break;
     case 'delete-record': deleteRecord(btn.dataset.kind, id); break;
     case 'client-filter':
       clientFilter = btn.dataset.value || 'active';
@@ -1609,7 +1976,9 @@ document.addEventListener('click', (e) => {
     case 'export-supplies': exportSuppliesCSV(); break;
     case 'export-payments': exportPaymentsCSV(); break;
     case 'export-clients': exportClientsCSV(); break;
+    case 'export-licenses': exportLicensesCSV(); break;
     case 'export-backup': exportBackup(); break;
+    case 'share-backup': shareBackup(); break;
     case 'import-backup': {
       const input = $('#restoreFile');
       if (input) input.click();

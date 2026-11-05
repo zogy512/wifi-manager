@@ -1,11 +1,13 @@
 'use strict';
 
-const CACHE = 'wifipro-v1';
+const CACHE = 'wifipro-v3';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
+  './styles.css?v=1.1',
   './app.js',
+  './app.js?v=1.1',
   './manifest.json',
   './icons/icon-180.png',
   './icons/icon-192.png',
@@ -38,17 +40,19 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-      return fetch(request)
-        .then((response) => {
-          if (response && response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy));
-          }
-          return response;
+    fetch(request)
+      .then((response) => {
+        if (response && response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(() =>
+        caches.match(request).then((cached) => {
+          if (cached) return cached;
+          return request.mode === 'navigate' ? caches.match('./index.html') : Response.error();
         })
-        .catch(() => (request.mode === 'navigate' ? caches.match('./index.html') : Response.error()));
-    })
+      )
   );
 });
