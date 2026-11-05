@@ -14,11 +14,17 @@ const TYPES = [
 const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.id, t]));
 
 const LICENSE_PLANS = [
-  { id: '1m', label: 'Mensuelle', months: 1 },
   { id: '3m', label: '3 mois', months: 3 },
-  { id: '1y', label: 'Annuelle', months: 12 },
+  { id: '6m', label: '6 mois', months: 6 },
+  { id: '1y', label: '1 an', months: 12 },
 ];
 const LICENSE_MAP = Object.fromEntries(LICENSE_PLANS.map((p) => [p.id, p]));
+const LEGACY_PLAN_LABELS = { '1m': 'Mensuelle (ancienne)' };
+const WHATSAPP_DEFAULT = '221777003559';
+
+function licensePlanLabel(id) {
+  return (LICENSE_MAP[id] && LICENSE_MAP[id].label) || LEGACY_PLAN_LABELS[id] || id;
+}
 
 const DB_KEY = 'wifipro:db:v1';
 const LOW_STOCK = 2;
@@ -50,6 +56,20 @@ const esc = (s) =>
 const nf = new Intl.NumberFormat('fr-FR');
 const fmt = (n) => `${nf.format(Math.round(num(n)))} F`;
 const fmtPlain = (n) => nf.format(Math.round(num(n)));
+const fmtPhone = (n) => {
+  const digits = String(n || '').replace(/\D/g, '');
+  if (!digits) return '';
+  const grouped = digits.replace(/^(\d{3})(\d{2})(\d{3})(\d{2})(\d{2})$/, '$1 $2 $3 $4 $5');
+  return `+${grouped}`;
+};
+const whatsappNumber = () => (db.settings.whatsapp || WHATSAPP_DEFAULT).replace(/\D/g, '');
+const whatsappLink = (message) =>
+  `https://wa.me/${whatsappNumber()}?text=${encodeURIComponent(message)}`;
+function openWhatsApp(message) {
+  const url = whatsappLink(message);
+  const win = window.open(url, '_blank', 'noopener');
+  if (!win) location.href = url;
+}
 const fmtDate = (iso, withTime = false) => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
@@ -136,6 +156,7 @@ const ICONS = {
   shield: '<path d="M12 3l7 3v6c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/>',
+  chat: '<path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 21l2.1-5.3A8.5 8.5 0 1 1 21 11.5Z"/><path d="M8.5 11h.01"/><path d="M12 11h.01"/><path d="M15.5 11h.01"/>',
   wifi: '<path d="M3.5 9.5a13 13 0 0 1 17 0"/><path d="M6.5 13a8.5 8.5 0 0 1 11 0"/><path d="M9.5 16.4a4 4 0 0 1 5 0"/><path d="M12 19.5h.01"/>',
 };
 function icon(name) {
@@ -158,10 +179,17 @@ function normalize(d) {
     settings: {
       name: src.settings && src.settings.name ? String(src.settings.name) : 'WifiPro',
       licensePrices: {
-        '1m': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['1m']),
-        '3m': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['3m']),
-        '1y': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['1y']),
+        '3m': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['3m']) > 0
+          ? num(src.settings.licensePrices['3m'])
+          : 2000,
+        '6m': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['6m']) > 0
+          ? num(src.settings.licensePrices['6m'])
+          : 5000,
+        '1y': num(src.settings && src.settings.licensePrices && src.settings.licensePrices['1y']) > 0
+          ? num(src.settings.licensePrices['1y'])
+          : 10000,
       },
+      whatsapp: String(src.settings && src.settings.whatsapp ? src.settings.whatsapp : '').replace(/\D/g, '') || WHATSAPP_DEFAULT,
     },
   };
 }
@@ -620,7 +648,7 @@ function pageVendor(id) {
     <div class="card-head"><h3>Licence vendeur</h3>${licenseBadge(v.id)}</div>
     ${lic.license
       ? `<div class="breakdown">
-          <div><span>Formule</span><strong>${LICENSE_MAP[lic.license.plan] ? LICENSE_MAP[lic.license.plan].label : lic.license.plan}</strong></div>
+          <div><span>Formule</span><strong>${licensePlanLabel(lic.license.plan)}</strong></div>
           <div><span>Du</span><strong>${fmtDay(lic.license.start)}</strong></div>
           <div><span>Au</span><strong>${fmtDay(lic.license.end)}</strong></div>
           <div><span>Montant payé</span><strong>${fmt(lic.license.amount)}</strong></div>
@@ -870,6 +898,7 @@ function pageLicenses() {
   );
   const totalRevenue = sum(db.licenses.map((l) => l.amount));
   const prices = db.settings.licensePrices || {};
+  const waDisplay = fmtPhone(db.settings.whatsapp);
 
   return `
   <div class="page-head">
@@ -886,6 +915,20 @@ function pageLicenses() {
     <div class="kpi"><span>Revenus ce mois</span><strong>${fmt(monthRevenue)}</strong><small>licences</small></div>
     <div class="kpi"><span>Total encaissé</span><strong>${fmt(totalRevenue)}</strong><small>${db.licenses.length} licence(s)</small></div>
   </div>
+
+  <section class="card">
+    <div class="card-head"><h3>Demander une licence</h3><span class="badge ok">WhatsApp</span></div>
+    <p class="hint">Choisissez la formule : WhatsApp s’ouvrira avec un message prêt à envoyer au ${esc(waDisplay)}.</p>
+    <label class="field"><span>Votre nom / point de vente (optionnel)</span>
+      <input id="waName" maxlength="80" placeholder="Ex : Awa Diallo — Marché central">
+    </label>
+    <div class="stack">
+      ${LICENSE_PLANS.map(
+        (p) => `<button class="btn ghost" type="button" data-action="license-whatsapp" data-plan="${p.id}">${icon('chat')}${p.label} — ${num(prices[p.id]) > 0 ? fmt(prices[p.id]) : 'prix à confirmer'}</button>`
+      ).join('')}
+    </div>
+    <p class="hint">Après réception du paiement, activez la licence ci-dessous pour débloquer les ventes du vendeur.</p>
+  </section>
 
   <section class="card">
     <div class="card-head"><h3>Vendeurs</h3><button class="btn sm" data-action="new-license">${icon('plus')}Licence</button></div>
@@ -906,13 +949,13 @@ function pageLicenses() {
 
 function licenseRow(x) {
   const { v, st } = x;
-  const plan = st.license && LICENSE_MAP[st.license.plan];
+  const plan = st.license ? licensePlanLabel(st.license.plan) : '';
   const sub =
     st.state === 'none'
       ? 'Aucune licence — ventes bloquées'
       : st.state === 'expired'
         ? `Expirée le ${fmtDay(st.license.end)} — ventes bloquées`
-        : `${plan ? plan.label : ''} · ${fmt(st.license.amount)} · jusqu’au ${fmtDay(st.license.end)}`;
+        : `${plan} · ${fmt(st.license.amount)} · jusqu’au ${fmtDay(st.license.end)}`;
 
   return `<div class="row">
     <span class="avatar">${esc(initials(v.nom))}</span>
@@ -1089,7 +1132,7 @@ function pageMore() {
   <section class="card">
     <div class="card-head"><h3>Application</h3><span class="badge ok">Hors ligne</span></div>
     <div class="breakdown">
-      <div><span>Version</span><strong>1.1</strong></div>
+      <div><span>Version</span><strong>1.2</strong></div>
       <div><span>Stockage</span><strong>Sur cet appareil</strong></div>
       <div><span>Types de codes</span><strong>${TYPES.length}</strong></div>
     </div>
@@ -1439,7 +1482,7 @@ function openLicenseForm(vendorId) {
 
   openSheet({
     title: 'Licence vendeur',
-    subtitle: 'Formule mensuelle, 3 mois ou annuelle.',
+    subtitle: 'Formules : 3 mois, 6 mois ou 1 an.',
     submitText: 'Enregistrer',
     body: `
       <label class="field"><span>Vendeur *</span>
@@ -1452,7 +1495,7 @@ function openLicenseForm(vendorId) {
           </select>
         </label>
         <label class="field"><span>Montant payé (F)</span>
-          <input type="number" name="amount" min="0" step="1" inputmode="numeric" value="${num(prices['1m'])}">
+          <input type="number" name="amount" min="0" step="1" inputmode="numeric" value="${num(prices[LICENSE_PLANS[0].id])}">
         </label>
       </div>
       <label class="field"><span>Début souhaité</span>
@@ -1522,28 +1565,31 @@ function openLicenseSettings() {
   const prices = db.settings.licensePrices || {};
   openSheet({
     title: 'Tarifs des licences',
-    subtitle: 'Définissez le prix de chaque formule vendeur.',
+    subtitle: 'Prix des formules et numéro WhatsApp à contacter.',
     submitText: 'Enregistrer',
     body: `
-      <label class="field"><span>Mensuelle (1 mois)</span>
-        <input type="number" name="p_1m" min="0" step="1" inputmode="numeric" value="${num(prices['1m'])}">
+      <div class="grid2">
+        ${LICENSE_PLANS.map(
+          (p) => `<label class="field"><span>${p.label}</span>
+            <input type="number" name="p_${p.id}" min="0" step="1" inputmode="numeric" value="${num(prices[p.id])}">
+          </label>`
+        ).join('')}
+      </div>
+      <label class="field"><span>Numéro WhatsApp des licences</span>
+        <input type="tel" name="whatsapp" inputmode="tel" value="${fmtPhone(db.settings.whatsapp)}" placeholder="+221 77 700 35 59">
       </label>
-      <label class="field"><span>3 mois</span>
-        <input type="number" name="p_3m" min="0" step="1" inputmode="numeric" value="${num(prices['3m'])}">
-      </label>
-      <label class="field"><span>Annuelle (12 mois)</span>
-        <input type="number" name="p_1y" min="0" step="1" inputmode="numeric" value="${num(prices['1y'])}">
-      </label>
-      <p class="hint">Ces montants préremplissent le formulaire de licence et restent modifiables à chaque paiement.</p>`,
+      <p class="hint">Ces montants préremplissent le formulaire de licence et restent modifiables à chaque paiement. Les demandes de licence arrivent sur ce numéro WhatsApp.</p>`,
     onSubmit(fd) {
-      db.settings.licensePrices = {
-        '1m': Math.max(0, num(fd.get('p_1m'), 0)),
-        '3m': Math.max(0, num(fd.get('p_3m'), 0)),
-        '1y': Math.max(0, num(fd.get('p_1y'), 0)),
-      };
+      const nextPrices = {};
+      LICENSE_PLANS.forEach((p) => {
+        nextPrices[p.id] = Math.max(0, num(fd.get(`p_${p.id}`), 0));
+      });
+      db.settings.licensePrices = nextPrices;
+      db.settings.whatsapp =
+        String(fd.get('whatsapp') || '').replace(/\D/g, '') || WHATSAPP_DEFAULT;
       save();
       render();
-      toast('Tarifs enregistrés');
+      toast('Tarifs et WhatsApp enregistrés');
       return true;
     },
   });
@@ -1783,7 +1829,7 @@ function exportLicensesCSV() {
     const v = vendorById(l.vendorId);
     rows.push([
       fmtDateTimeCSV(l.date), v ? v.nom : 'Vendeur supprimé',
-      LICENSE_MAP[l.plan] ? LICENSE_MAP[l.plan].label : l.plan,
+      licensePlanLabel(l.plan),
       fmtDay(l.start), fmtDay(l.end), l.amount, l.note || '',
     ]);
   });
@@ -1963,6 +2009,20 @@ document.addEventListener('click', (e) => {
     case 'delete-client': deleteClient(id); break;
     case 'new-license': openLicenseForm(vendor); break;
     case 'license-settings': openLicenseSettings(); break;
+    case 'license-whatsapp': {
+      const plan = LICENSE_MAP[btn.dataset.plan];
+      if (!plan) break;
+      const price = num((db.settings.licensePrices || {})[plan.id]);
+      const nameInput = document.getElementById('waName');
+      const name = nameInput ? nameInput.value.trim() : '';
+      const message = [
+        `Bonjour, je souhaite obtenir une licence vendeur WifiPro de ${plan.label}${price > 0 ? ` (${fmt(price)})` : ''}.`,
+        name ? `Nom / point de vente : ${name}.` : '',
+        'Merci de me confirmer le paiement et l’activation.',
+      ].filter(Boolean).join('\n');
+      openWhatsApp(message);
+      break;
+    }
     case 'delete-record': deleteRecord(btn.dataset.kind, id); break;
     case 'client-filter':
       clientFilter = btn.dataset.value || 'active';
